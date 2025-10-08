@@ -1,70 +1,97 @@
-from __future__ import annotations
-from typing import Iterable, List, Union
-import pandas as pd
 import yfinance as yf
-import pandas_ta as ta
+import pandas as pd
+from typing import List, Optional
 
-_COLMAP = {"Open": "open", "High": "high", "Low": "low", "Close": "close", "Volume": "volume"}
 
 class B3Data:
-    def _norm(self, t: str) -> str:
-        t = t.strip().upper()
-        return t if t.endswith(".SA") else f"{t}.SA"
+    """
+    A class to fetch and process B3 stock data using yfinance.
+    """
+
+    def __init__(
+        self,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
+    ):
+        """
+        Initializes the B3Data class.
+        Args:
+            start_date (str, optional): The start date for fetching data
+                in 'YYYY-MM-DD' format. Defaults to None.
+            end_date (str, optional): The end date for fetching data in
+                'YYYY-MM-DD' format. Defaults to None.
+        """
+        self.start_date = start_date
+        self.end_date = end_date
 
     def get_stock_data(
         self,
-        ticker_list: Union[str, Iterable[str]],
+        tickers: List[str],
         period: str = "1y",
-        interval: str = "1d",
-        auto_adjust: bool = True,
+        interval: str = "1d"
     ) -> pd.DataFrame:
         """
-        Return OHLCV for B3 tickers using yfinance.
-        Columns: ['ticker','date','open','high','low','close','volume']
+        Fetches historical data for a list of stock tickers.
+        Args:
+            tickers (List[str]): A list of stock tickers
+                (e.g., ['PETR4.SA', 'VALE3.SA']).
+            period (str, optional): The period to fetch data for (e.g., '1d',
+                '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y', '10y', 'ytd',
+                'max'). Defaults to "1y".
+            interval (str, optional): The data interval (e.g., '1m', '2m',
+                '5m', '15m', '30m', '60m', '90m', '1h', '1d', '5d', '1wk',
+                '1mo', '3mo'). Defaults to "1d".
+        Returns:
+            pd.DataFrame: A DataFrame containing the historical data for the
+                given tickers.
         """
-        tickers = [ticker_list] if isinstance(ticker_list, str) else list(ticker_list)
-        if not tickers:
-            raise ValueError("ticker_list must not be empty")
-        tickers = [self._norm(t) for t in tickers]
+        if not isinstance(tickers, list) or not all(
+            isinstance(ticker, str) for ticker in tickers
+        ):
+            raise ValueError("Tickers must be a list of strings.")
 
-        frames: List[pd.DataFrame] = []
-        for t in tickers:
-            hist = yf.Ticker(t).history(period=period, interval=interval, auto_adjust=auto_adjust)
-            if hist.empty:
-                continue
-            hist = hist.rename(columns=_COLMAP)
-            keep = [c for c in ["open", "high", "low", "close", "volume"] if c in hist.columns]
-            hist = hist[keep]
-            hist["ticker"] = t
-            hist = hist.reset_index().rename(columns={"Date": "date"})
-            frames.append(hist)
+        try:
+            data = yf.download(
+                tickers,
+                period=period,
+                interval=interval,
+                start=self.start_date,
+                end=self.end_date
+            )
+            if data.empty:
+                return pd.DataFrame()
 
-        if not frames:
-            return pd.DataFrame(columns=["ticker", "date", "open", "high", "low", "close", "volume"])
+            # Restructure dataframe for better readability
+            data.columns = data.columns.swaplevel(0, 1)
+            data.sort_index(axis=1, level=0, inplace=True)
 
-        df = pd.concat(frames, ignore_index=True)
-        df = df.sort_values(["ticker", "date"]).reset_index(drop=True)
-        return self.calculate_indicators(df)
+            return data
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            return pd.DataFrame()
 
-    def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+    def calculate_technical_indicators(
+        self, data: pd.DataFrame
+    ) -> pd.DataFrame:
         """
-        Calculates RSI and MACD for each ticker in the dataframe.
+        Calculates technical indicators for the given stock data.
+        Args:
+            data (pd.DataFrame): A DataFrame with stock data,
+                multi-indexed by ticker.
+        Returns:
+            pd.DataFrame: A DataFrame with the technical indicators.
         """
-        df = df.copy()
-        df.set_index(pd.DatetimeIndex(df["date"]), inplace=True)
-        
-        indicator_frames = []
-        for ticker in df["ticker"].unique():
-            ticker_df = df[df["ticker"] == ticker].copy()
-            rsi = ticker_df.ta.rsi(close="close", length=14)
-            ticker_df['RSI_14'] = rsi
-            macd = ticker_df.ta.macd(close="close", fast=12, slow=26, signal=9)
-            ticker_df['MACD_12_26_9'] = macd['MACD_12_26_9']
-            ticker_df['MACDh_12_26_9'] = macd['MACDh_12_26_9']
-            ticker_df['MACDs_12_26_9'] = macd['MACDs_12_26_9']
-            indicator_frames.append(ticker_df)
-            
-        return pd.concat(indicator_frames).reset_index(drop=True)
+        if data.empty:
+            return pd.DataFrame()
 
-    def __init__(self):
-        pass
+        df_with_indicators = data.copy()
+
+        # Example: Calculate SMA for each stock
+        for ticker in df_with_indicators.columns.levels[0]:
+            df_with_indicators[(ticker, 'SMA_20')] = (
+                df_with_indicators[(ticker, 'Close')]
+                .rolling(window=20)
+                .mean()
+            )
+
+        return df_with_indicators
